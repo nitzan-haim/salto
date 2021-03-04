@@ -14,12 +14,13 @@
 * limitations under the License.
 */
 import _ from 'lodash'
-import { Value, ObjectType, ElemID, InstanceElement, Element, isObjectType, ChangeGroup, getChangeElement, DeployResult } from '@salto-io/adapter-api'
+import { Value, ObjectType, ElemID, InstanceElement, Element, isObjectType, ChangeGroup, getChangeElement, DeployResult, ChangeDataType, Change } from '@salto-io/adapter-api'
 import {
   findElement,
 } from '@salto-io/adapter-utils'
 import { collections, values } from '@salto-io/lowerdash'
 import { MetadataInfo } from 'jsforce'
+import { mockDefaultValues, mockTypes } from 'test/mock_elements'
 import { SalesforceRecord } from '../src/client/types'
 import { filtersRunner } from '../src/filter'
 import { SALESFORCE } from '../src/constants'
@@ -200,6 +201,27 @@ export const createElementAndVerify = async <T extends InstanceElement | ObjectT
   return result
 }
 
+export const verifyElementExists = async <T extends InstanceElement | ObjectType> (
+  client: SalesforceClient, element: T,
+): Promise<void> => {
+  if (isInstanceOfCustomObject(element)) {
+    expect(await getRecordOfInstance(client, element)).toBeDefined()
+  } else {
+    expect(await getMetadataFromElement(client, element)).toBeDefined()
+  }
+}
+
+export const verifyElementAbsent = async <T extends InstanceElement | ObjectType> (
+  client: SalesforceClient, element: T,
+): Promise<void> => {
+  if (isInstanceOfCustomObject(element)) {
+    expect(await getRecordOfInstance(client, element)).toBeUndefined()
+  } else {
+    expect(await getMetadataFromElement(client, element)).toBeUndefined()
+  }
+}
+
+
 export const createAndVerify = async (adapter: SalesforceAdapter, client: SalesforceClient,
   type: string, md: MetadataInfo, typeElements: Iterable<Element>): Promise<InstanceElement> => {
   const instance = await createInstance({ value: md, type, typeElements })
@@ -243,3 +265,39 @@ export const runFiltersOnFetch = async (
   filterCreators = DEFAULT_FILTERS
 ): Promise<void | ConfigChangeSuggestion[]> =>
   filtersRunner(client, { ...defaultFilterContext, ...context }, filterCreators).onFetch(elements)
+
+
+type ModificationFunc = (inst: InstanceElement) => InstanceElement
+
+export const manipulateType = (
+  typeName: string,
+  modificationFunc: ModificationFunc,
+  changes: Change<ChangeDataType>[],
+  allInstances: InstanceElement[]
+): InstanceElement[] => {
+  const [typeNameInstances, otherInstances] = _.partition(
+    allInstances, inst => metadataType(inst) === typeName
+  )
+  if (typeNameInstances.length !== 2) {
+    throw new Error(`could not find all instances of type ${typeName}`)
+  }
+
+  const [instToModify, instToRemove] = typeNameInstances
+  const newInstance = new InstanceElement('new Profile', mockTypes.Profile, mockDefaultValues.Profile)
+  const modifiedInst = modificationFunc(instToModify)
+
+  const additionChange: Change<InstanceElement> = {
+    action: 'add',
+    data: { after: newInstance },
+  }
+  const modificationChange: Change<InstanceElement> = {
+    action: 'modify',
+    data: { before: instToModify, after: modifiedInst },
+  }
+  const removalChange: Change<InstanceElement> = {
+    action: 'remove',
+    data: { before: instToRemove },
+  }
+  changes.push(...[additionChange, modificationChange, removalChange])
+  return [...otherInstances, modifiedInst, newInstance]
+}

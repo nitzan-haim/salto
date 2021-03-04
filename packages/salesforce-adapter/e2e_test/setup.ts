@@ -14,11 +14,11 @@
 * limitations under the License.
 */
 import { MetadataInfo } from 'jsforce'
-import { ObjectType } from '@salto-io/adapter-api'
+import { ObjectType, InstanceElement } from '@salto-io/adapter-api'
 import * as constants from '../src/constants'
 import { CustomField, ProfileInfo } from '../src/client/types'
 import { createDeployPackage } from '../src/transformers/xml_transformer'
-import { MetadataValues, createInstanceElement } from '../src/transformers/transformer'
+import { MetadataValues, createInstanceElement, MetadataInstanceElement } from '../src/transformers/transformer'
 import SalesforceClient from '../src/client/client'
 import { objectExists } from './utils'
 import { mockTypes, mockDefaultValues } from '../test/mock_elements'
@@ -870,4 +870,21 @@ export const verifyElementsExist = async (client: SalesforceClient): Promise<voi
     verifyLeadHasConvertSettings(),
     verifyDeployableInstancesExist(),
   ])
+}
+
+
+export const createInstances = async (client: SalesforceClient):
+Promise<InstanceElement[]> => {
+  // TODO: add more types
+  const instances: MetadataInstanceElement[] = [
+    // TODO: more elegant way to create twice?
+    createInstanceElement(mockDefaultValues.Profile, mockTypes.Profile),
+    createInstanceElement(mockDefaultValues.Profile, mockTypes.Profile),
+  ]
+  const pkg = createDeployPackage()
+  instances.forEach(inst => pkg.add(inst))
+  await client.deploy(await pkg.getZip())
+
+  // TODO: is this conversion allowed?
+  return instances.map(inst => inst as InstanceElement)
 }

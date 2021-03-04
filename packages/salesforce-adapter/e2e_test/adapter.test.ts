@@ -18,7 +18,8 @@ import {
   ObjectType, ElemID, InstanceElement, Field, Value, Element, Values, BuiltinTypes,
   isInstanceElement, isReferenceExpression, ReferenceExpression, CORE_ANNOTATIONS,
   TypeElement, isObjectType, getRestriction, StaticFile, isStaticFile, getChangeElement,
-  Change, FetchOptions, ProgressReporter,
+  Change, FetchOptions, ProgressReporter, ChangeGroup, isAdditionChange,
+  isModificationChange, isRemovalChange,
 } from '@salto-io/adapter-api'
 import {
   findElement, naclCase,
@@ -58,12 +59,12 @@ import { mockTypes, lwcJsResourceContent, lwcHtmlResourceContent, mockDefaultVal
 import {
   objectExists, getMetadata, getMetadataFromElement, createInstance, removeElementAndVerify,
   removeElementIfAlreadyExists, createElementAndVerify, createElement, removeElement,
-  removeMetadataIfAlreadyExists,
+  removeMetadataIfAlreadyExists, manipulateType, verifyElementExists, verifyElementAbsent,
 } from './utils'
 import {
   accountApiName, CUSTOM_FIELD_NAMES, customObjectAddFieldsName,
   customObjectWithFieldsName, gvsName, removeCustomObjectsWithVariousFields,
-  summaryFieldName, verifyElementsExist,
+  summaryFieldName, verifyElementsExist, createInstances,
 } from './setup'
 
 const { makeArray } = collections.array
@@ -3648,6 +3649,102 @@ describe('Salesforce adapter E2E with real account', () => {
         expect(modificationResult.errors).toHaveLength(0)
         expect(modificationResult.appliedChanges).toEqual(changes)
         expect(await objectExists(client, constants.BUSINESS_HOURS_METADATA_TYPE, 'BusinessHours')).toBe(true)
+      })
+    })
+
+    describe('new CRUD operations tests', () => {
+      let instances: InstanceElement[]
+      let changes: Change<InstanceElement>[]
+
+      /*
+      {
+        type: {
+            add: AdditionChange,
+            remove: RemovalChange,
+            modify: ModificationChange,
+        }
+      }
+      */
+      let changesByMetadataAndAction: Record<string, Record<string, Change<InstanceElement>[]>>
+
+
+      const performCRUDOperations = async (
+        // TODO: this method also changes instances to include the updated list of instances,
+        // not sure if it's needed
+        allInstances: InstanceElement[]
+      ): Promise<void> => {
+        changes = []
+        instances = manipulateType(constants.PROFILE_METADATA_TYPE, (inst: InstanceElement) => {
+          inst.value.fieldPermissions.Lead.Fax.readable = false
+          return inst
+        }, changes, allInstances)
+        // TODO: manipulate more types
+
+        const changeGroup: ChangeGroup = {
+          groupID: 'testing CRUD operations',
+          changes,
+        }
+        await adapter.deploy({ changeGroup })
+      }
+
+      const getRemovedInstance = (type: string): InstanceElement => {
+        const removalChanges = changesByMetadataAndAction[type].remove
+        if (removalChanges && removalChanges.length === 1 && isRemovalChange(removalChanges[0])) {
+          return getChangeElement(removalChanges[0])
+        }
+        throw new Error(`setup failed for type ${type}`)
+      }
+
+      const getModificationChangeInstances = (type: string): InstanceElement[] => {
+        const modificationChanges = changesByMetadataAndAction[type].modify
+        if (modificationChanges && modificationChanges.length === 1
+          && isModificationChange(modificationChanges[0])) {
+          const { before, after } = modificationChanges[0].data
+          return [before, after]
+        }
+        throw new Error(`setup failed for type ${type}`)
+      }
+
+      const getAddedInstance = (type: string): InstanceElement => {
+        const additionChanges = changesByMetadataAndAction[type].add
+        if (additionChanges && additionChanges.length === 1
+            && isAdditionChange(additionChanges[0])) {
+          return getChangeElement(additionChanges[0])
+        }
+        throw new Error(`setup failed for type ${type}`)
+      }
+
+      afterAll(async () => {
+        // TODO: more efficient way to delete all instances together?
+        instances.forEach(async instance => {
+          await removeElementIfAlreadyExists(client, instance)
+        })
+        changesByMetadataAndAction = {}
+        const changesByType = _.groupBy(changes, change => metadataType(getChangeElement(change)))
+        Object.keys(changesByType).forEach(type => {
+          changesByMetadataAndAction[type] = _.groupBy(changesByType[type], change => change.action)
+        })
+      })
+
+      beforeAll(async () => {
+        instances = await createInstances(client)
+        await performCRUDOperations(instances)
+      })
+
+      describe('Profile', () => {
+        it('should delete', () => {
+          const removedInstance = getRemovedInstance(PROFILE_METADATA_TYPE)
+          verifyElementAbsent(client, removedInstance)
+        })
+        it('should modify instance', () => {
+          const [before, after] = getModificationChangeInstances(PROFILE_METADATA_TYPE)
+          verifyElementExists(client, after)
+          verifyElementAbsent(client, before)
+        })
+        it('should add instance', () => {
+          const addedInstance = getAddedInstance(PROFILE_METADATA_TYPE)
+          verifyElementExists(client, addedInstance)
+        })
       })
     })
   })
